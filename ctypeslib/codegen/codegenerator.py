@@ -672,6 +672,10 @@ class Generator:
             for f in fields:
                 if f.name in BANNED_NAMES:
                     f.name = "_%s" % f.name
+                
+                # skip padding in type definitions
+                if "PADDING" in f.name:
+                    continue
                 print("        %s: %s" % (f.name, self.type_name_for_types(f.type)), file=self.stream)
         else:
             print("    pass\n", file=self.stream)
@@ -1021,6 +1025,27 @@ def ctypes_function_for_shared_library(libname: str):
         )
         loops = self.generate_items(items)
 
+        # generate type aliases
+        aliases = []
+
+        for name in self.names:
+            if name.startswith("struct_ggml"):
+                print("%s = %s" % (name[7:], name), file=self.stream)
+                aliases.append(name[7:])
+            else:
+                aliases.append(name)
+
+        print("if TYPE_CHECKING:", file=self.stream)
+        for name in self.names:
+            if name.startswith("struct_ggml"):
+                print("    %s_p = ctypes._Pointer[%s]" % (name[7:], name), file=self.stream)
+                aliases.append(name[7:] + "_p")
+
+        print("else:", file=self.stream)
+        for name in self.names:
+            if name.startswith("struct_ggml"):
+                print("    %s_p = ctypes.POINTER(%s)" % (name[7:], name), file=self.stream)
+
         self.output.write(self.imports.getvalue())
         self.output.write("\n\n")
         self.output.write(self.stream.getvalue())
@@ -1030,7 +1055,7 @@ def ctypes_function_for_shared_library(libname: str):
         print(text, file=self.output)
         # doesn't work for the first line in certain cases.
         wrapper = textwrap.TextWrapper(break_long_words=False, initial_indent="    ", subsequent_indent="    ")
-        text = "[%s]" % ", ".join([repr(str(n)) for n in sorted(self.names)])
+        text = "[%s]" % ", ".join([repr(str(n)) for n in sorted(aliases)])
         for line in wrapper.wrap(text):
             print(line, file=self.output)
 
