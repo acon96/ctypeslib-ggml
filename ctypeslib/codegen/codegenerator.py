@@ -26,6 +26,7 @@ from ctypeslib.library import Library
 
 log = logging.getLogger("codegen")
 
+BANNED_NAMES = ["async", "as"]
 
 class Generator:
     def __init__(self, output, cfg):
@@ -162,6 +163,29 @@ class Generator:
         return t.name
         # All typedesc typedefs should be handled
         # raise TypeError('This typedesc should be handled %s'%(t))
+
+    def type_name_for_types(self, t, generate=True):
+        """
+        Returns a string containing an expression that can be used to
+        refer to the type. Assumes the 'from ctypes import *'
+        namespace is available.
+        """
+
+        if isinstance(t, typedesc.FundamentalType):
+            return self.FundamentalType(t)
+        if isinstance(t, typedesc.ArrayType):
+            return "ctypes.Array[%s]" % self.type_name_for_types(t.typ, generate)
+        if isinstance(t, typedesc.PointerType) and isinstance(t.typ, typedesc.FunctionType):
+            return self.type_name_for_types(t.typ, generate)
+        if isinstance(t, typedesc.PointerType):
+            type_name = self.type_name_for_types(t.typ, generate)
+            if type_name == "None":
+                return "ctypes.c_void_p"
+            return "ctypes._Pointer[%s]" % type_name
+        if isinstance(t, typedesc.FunctionType):
+            args = [self.type_name_for_types(x, generate) for x in list(t.iterArgTypes())]
+            return "Callable[[%s], %s]" % (", ".join(args), self.type_name_for_types(t.returns, generate))
+        return t.name
 
     ################################################################
 
@@ -639,10 +663,17 @@ class Generator:
                 print("class %s(Structure):" % head.struct.name, file=self.stream)
             elif isinstance(head.struct, typedesc.Union):
                 print("class %s(Union):" % head.struct.name, file=self.stream)
-        if not inline:
-            print("    pass\n", file=self.stream)
         # special empty struct
         if inline and not head.struct.members:
+            print("    pass\n", file=self.stream)
+        elif head.struct.members:
+            print("    if TYPE_CHECKING:", file=self.stream)
+            fields = [f for f in head.struct.members if isinstance(f, typedesc.Field)]
+            for f in fields:
+                if f.name in BANNED_NAMES:
+                    f.name = "_%s" % f.name
+                print("        %s: %s" % (f.name, self.type_name_for_types(f.type)), file=self.stream)
+        else:
             print("    pass\n", file=self.stream)
         self.names.append(head.struct.name)
         log.debug("Head finished for %s", head.name)
@@ -756,7 +787,33 @@ class Generator:
         # it not yet exists. Will map library pathnames to loaded libs.
         if self._c_libraries is None:
             self._c_libraries = {}
+            print("GGML_LIBRARY_DIR = os.environ.get('GGML_LIBRARY_DIR', '')", file=self.imports)
             print("_libraries = {}", file=self.imports)
+
+            # also setup the ctypes_function decorator
+            print("""
+def ctypes_function_for_shared_library(libname: str):
+    def ctypes_function(
+        name: str, argtypes: List[Any], restype: Any, enabled: bool = True
+    ):
+        def decorator(f: F) -> F:
+            if enabled:
+                func = getattr(_libraries[libname], name)
+                func.argtypes = argtypes
+                func.restype = restype
+                functools.wraps(f)(func)
+                return func
+            else:
+                def f_(*args: Any, **kwargs: Any):
+                    raise RuntimeError(
+                        f"Function '{name}' is not available in the shared library (enabled=False)"
+                    )
+                return cast(F, f_)
+
+        return decorator
+
+    return ctypes_function
+""", file=self.imports)
 
     _stdcall_libraries = None
 
@@ -801,7 +858,7 @@ class Generator:
         else:
             global_flag = ""
         if library._name not in self._c_libraries:
-            print("_libraries[%r] =%s ctypes.CDLL(%r%s)" % (library._name, stub_comment, library._filepath, global_flag),
+            print("_libraries[%r] =%s ctypes.CDLL(\"%%s%s\" %% GGML_LIBRARY_DIR%s)" % (library._name, stub_comment, library._name, global_flag),
                   file=self.imports)
             self._c_libraries[library._name] = None
         return "_libraries[%r]" % library._name
@@ -832,36 +889,31 @@ class Generator:
         self.generate_all(func.iterArgTypes())
 
         # useful code
-        args = [self.type_name(a) for a in func.iterArgTypes()]
         cc = "cdecl"
         if "__stdcall__" in func.attributes:
             cc = "stdcall"
 
-        #
         library = self.find_library_with_func(func)
         if library:
-            libname = self.get_sharedlib(library, cc)
+            self.get_sharedlib(library, cc)
+            libname = library._name
         else:
+            libname = "FIXME_STUB"
 
-            class LibraryStub:
-                _filepath = "FIXME_STUB"
-                _name = "FIXME_STUB"
-
-            libname = self.get_sharedlib(LibraryStub(), cc, stub=True)
-
-        argnames = [a or "p%d" % (i + 1) for i, a in enumerate(func.iterArgNames())]
-
+        argnames = [(a if a not in BANNED_NAMES else "_%s" % a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgNames())]
+        argtypes_decorator = [self.type_name(a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgTypes())]
+        argtypes_funcdef = [self.type_name_for_types(a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgTypes())]
+        resulttype = self.type_name(func.returns)
+        
         if self.generate_locations and func.location:
             print("# %s %s" % func.location, file=self.stream)
         # Generate the function decl code
-        print("try:", file=self.stream)
-        print("    %s = %s.%s" % (func.name, libname, func.name), file=self.stream)
-        print("    %s.restype = %s" % (func.name, self.type_name(func.returns)), file=self.stream)
         if self.generate_comments:
             print("# %s(%s)" % (func.name, ", ".join(argnames)), file=self.stream)
-        print("    %s.argtypes = [%s]" % (func.name, ", ".join(args)), file=self.stream)
-        print("except AttributeError:", file=self.stream)
-        print("    pass", file=self.stream)
+        
+        print('@ctypes_function_for_shared_library(%r)("%s", [%s], %s, enabled=%s)' % (libname, func.name, ', '.join(argtypes_decorator), resulttype, 'True' if library else 'False'), file=self.stream)
+        print("def %s(%s):" % (func.name, ", ".join(["%s: %s" % x for x in zip(argnames, argtypes_funcdef)])), file=self.stream)
+        print("    ...\n", file=self.stream)
 
         if self.generate_docstrings:
 
