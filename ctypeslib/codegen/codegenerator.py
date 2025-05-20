@@ -907,7 +907,8 @@ def ctypes_function_for_shared_library(libname: str):
         argnames = [(a if a not in BANNED_NAMES else "_%s" % a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgNames())]
         argtypes_decorator = [self.type_name(a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgTypes())]
         argtypes_funcdef = [self.type_name_for_types(a) or "p%d" % (i + 1) for i, a in enumerate(func.iterArgTypes())]
-        resulttype = self.type_name(func.returns)
+        resulttype_decorator = self.type_name(func.returns)
+        resulttype_funcdef = self.type_name_for_types(func.returns)
         
         if self.generate_locations and func.location:
             print("# %s %s" % func.location, file=self.stream)
@@ -915,8 +916,8 @@ def ctypes_function_for_shared_library(libname: str):
         if self.generate_comments:
             print("# %s(%s)" % (func.name, ", ".join(argnames)), file=self.stream)
         
-        print('@ctypes_function_for_shared_library(%r)("%s", [%s], %s, enabled=%s)' % (libname, func.name, ', '.join(argtypes_decorator), resulttype, 'True' if library else 'False'), file=self.stream)
-        print("def %s(%s):" % (func.name, ", ".join(["%s: %s" % x for x in zip(argnames, argtypes_funcdef)])), file=self.stream)
+        print('@ctypes_function_for_shared_library(%r)("%s", [%s], %s, enabled=%s)' % (libname, func.name, ', '.join(argtypes_decorator), resulttype_decorator, 'True' if library else 'False'), file=self.stream)
+        print("def %s(%s) -> %s:" % (func.name, ", ".join(["%s: %s" % x for x in zip(argnames, argtypes_funcdef)]), resulttype_funcdef), file=self.stream)
         print("    ...\n", file=self.stream)
 
         if self.generate_docstrings:
