@@ -793,31 +793,11 @@ class Generator:
             self._c_libraries = {}
             print("GGML_LIBRARY_DIR = os.environ.get('GGML_LIBRARY_DIR', '')", file=self.imports)
             print("_libraries = {}", file=self.imports)
+            print(file=self.imports)
 
             # also setup the ctypes_function decorator
-            print("""
-def ctypes_function_for_shared_library(libname: str):
-    def ctypes_function(
-        name: str, argtypes: List[Any], restype: Any, enabled: bool = True
-    ):
-        def decorator(f: F) -> F:
-            if enabled:
-                func = getattr(_libraries[libname], name)
-                func.argtypes = argtypes
-                func.restype = restype
-                functools.wraps(f)(func)
-                return func
-            else:
-                def f_(*args: Any, **kwargs: Any):
-                    raise RuntimeError(
-                        f"Function '{name}' is not available in the shared library (enabled=False)"
-                    )
-                return cast(F, f_)
-
-        return decorator
-
-    return ctypes_function
-""", file=self.imports)
+            decorator = pkgutil.get_data("ctypeslib", "data/decorator.tpl").decode()
+            print(decorator, file=self.imports)
 
     _stdcall_libraries = None
 
@@ -916,7 +896,7 @@ def ctypes_function_for_shared_library(libname: str):
         if self.generate_comments:
             print("# %s(%s)" % (func.name, ", ".join(argnames)), file=self.stream)
         
-        print('@ctypes_function_for_shared_library(%r)("%s", [%s], %s, enabled=%s)' % (libname, func.name, ', '.join(argtypes_decorator), resulttype_decorator, 'True' if library else 'False'), file=self.stream)
+        print('@ctypes_function_for_shared_library(%r)("%s", [%s], %s)' % (libname, func.name, ', '.join(argtypes_decorator), resulttype_decorator), file=self.stream)
         print("def %s(%s) -> %s:" % (func.name, ", ".join(["%s: %s" % x for x in zip(argnames, argtypes_funcdef)]), resulttype_funcdef), file=self.stream)
         print("    ...\n", file=self.stream)
 
