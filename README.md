@@ -1,3 +1,5 @@
+> NOTE: This is a fork of the project designed to be used with the ggraph.py library: https://github.com/acon96/ggraph.py
+
 # ctypeslib with libclang
 
 
