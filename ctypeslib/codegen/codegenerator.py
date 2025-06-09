@@ -791,7 +791,7 @@ class Generator:
         # it not yet exists. Will map library pathnames to loaded libs.
         if self._c_libraries is None:
             self._c_libraries = {}
-            print("GGML_LIBRARY_DIR = os.environ.get('GGML_LIBRARY_DIR', '')", file=self.imports)
+            print("GGML_LIBRARY_DIR = os.environ.get('GGML_LIBRARY_DIR', os.path.dirname(__file__))", file=self.imports)
             print("_libraries = {}", file=self.imports)
             print(file=self.imports)
 
@@ -841,11 +841,14 @@ class Generator:
             global_flag = ", mode=ctypes.RTLD_GLOBAL"
         else:
             global_flag = ""
-        if library._name not in self._c_libraries:
-            print("_libraries[%r] =%s ctypes.CDLL(\"%%s%s\" %% GGML_LIBRARY_DIR%s)" % (library._name, stub_comment, library._name, global_flag),
+
+        libname, ext = os.path.splitext(library._name)
+        if libname not in self._c_libraries:
+            print("with suppress(OSError):", file=self.imports)
+            print("    _libraries[%r] =%s ctypes.CDLL(os.path.join(GGML_LIBRARY_DIR, \"%s.%%s\" %% DYNAMIC_LIB_EXT%s))" % (libname, stub_comment, libname, global_flag),
                   file=self.imports)
-            self._c_libraries[library._name] = None
-        return "_libraries[%r]" % library._name
+            self._c_libraries[libname] = None
+        return "_libraries[%r]" % libname
 
     _STRING_defined = False
 
@@ -880,7 +883,7 @@ class Generator:
         library = self.find_library_with_func(func)
         if library:
             self.get_sharedlib(library, cc)
-            libname = library._name
+            libname = os.path.splitext(library._name)[0]
         else:
             libname = "FIXME_STUB"
 
